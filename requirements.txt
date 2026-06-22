@@ -1,0 +1,8 @@
+# requirements.txt
+jax>=0.4.0
+jaxlib>=0.4.0
+equinox>=0.10.0
+optax>=0.1.0
+numpy>=1.22.0
+matplotlib>=3.5.0
+streamlit>=1.20.0
