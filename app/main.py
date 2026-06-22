@@ -5,102 +5,135 @@ import numpy as np
 import os
 import sys
 import jax
+import time
 
 # Ensure app can find our source files natively
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.train import train_pinn
+from src.physics import compute_acceleration_at_point
 
-st.set_page_config(layout="wide")
-st.title("🌌 PINN Space Engine: Multi-Body Spacetime Sandbox (V2)")
-st.markdown("""
-This sandbox uses a **Generalized Physics-Informed Neural Network (PINN)** to solve multi-body gravitational potential fields.
-Rather than being fixed to one scenario, the model uses center-of-mass conditioning and mass-weighted radial features to solve arbitrary mass distributions.
-""")
+st.set_page_config(layout="wide", page_title="PINN Cosmic Sandbox")
 
-# 1. Setup UI Layout Sliders & Configuration Selector
-st.sidebar.header("Simulation Parameters")
+# Sleek Minimalist Header
+st.title("🌌 PINN Cosmic Sandbox")
+st.caption("A fully continuous, mesh-free gravitational simulator accelerated by a Physics-Informed Neural Network Meta-Solver.")
+
+# 1. Sidebar Configurations
+st.sidebar.header("System Controls")
 system_type = st.sidebar.selectbox(
-    "Select Cosmic Configuration",
+    "Select Universe Map",
     ["Single Star", "Binary Star System", "Lagrange Three-Body"]
 )
-resolution = st.sidebar.slider("Grid Resolution", min_value=15, max_value=60, value=30)
-softening = st.sidebar.slider("Singularity Softening (Epsilon)", min_value=0.05, max_value=0.5, value=0.1)
+resolution = st.sidebar.slider("Grid Fidelity", min_value=20, max_value=60, value=40)
+softening = st.sidebar.slider("Singularity Softening", min_value=0.05, max_value=0.5, value=0.12)
+
+st.sidebar.markdown("---")
+st.sidebar.header("Engine Tuning")
+num_particles = st.sidebar.slider("Space Dust Density", min_value=20, max_value=200, value=100)
+dt = st.sidebar.slider("Engine Time Step (dt)", min_value=0.01, max_value=0.10, value=0.04)
+run_sim = st.sidebar.toggle("Engage Physics Engine", value=True)
 
 # 2. Map Selector to Body Struct Lists
 if system_type == "Single Star":
-    active_bodies = [{'pos': [0.0, 0.0], 'mass': 1.5}]
+    active_bodies = [{'pos': [0.0, 0.0], 'mass': 2.0}]
 elif system_type == "Binary Star System":
     active_bodies = [
-        {'pos': [-1.5, 0.0], 'mass': 1.0},
-        {'pos': [1.5, 0.0],  'mass': 1.0}
+        {'pos': [-1.6, 0.0], 'mass': 1.2},
+        {'pos': [1.6, 0.0],  'mass': 1.2}
     ]
 else:  # Lagrange Three-Body
     active_bodies = [
-        {'pos': [-2.0, -1.0], 'mass': 1.2},
-        {'pos': [2.0, -1.0],  'mass': 1.2},
-        {'pos': [0.0, 2.0],   'mass': 0.8}
+        {'pos': [-2.0, -1.0], 'mass': 1.5},
+        {'pos': [2.0, -1.0],  'mass': 1.5},
+        {'pos': [0.0, 2.2],   'mass': 1.0}
     ]
 
 # Construct static cache array keys out of configurations
 body_key_string = "_".join([f"{b['pos']}_{b['mass']}" for b in active_bodies])
-model_cache_key = f"v2_res_{resolution}_eps_{softening}_{hash(body_key_string)}"
+model_cache_key = f"v3_final_res_{resolution}_eps_{softening}_{hash(body_key_string)}"
 
-# 3. Dynamic Training/Caching Block
+# 3. Dynamic Model Training/Caching Block
 if model_cache_key not in st.session_state:
-    with st.spinner(f"Training Multi-Body PINN for {system_type}..."):
+    with st.spinner("Compiling Neural Acceleration Vectors..."):
         st.session_state[model_cache_key] = train_pinn(
             steps=4000, 
             resolution=resolution, 
             epsilon=softening,
             body_list=active_bodies
         )
-    st.success("Multi-Body PINN Engine Compiled and Trained Successfully!")
 
 model = st.session_state[model_cache_key]
 
-# 4. Generate Ground Truth & Model Evaluation Inputs
-x = np.linspace(-5, 5, resolution)
-y = np.linspace(-5, 5, resolution)
-X, Y = np.meshgrid(x, y)
-coords_np = np.stack([X.ravel(), Y.ravel()], axis=-1)
-coords_jnp = jnp.array(coords_np)
-
+# Prepare JAX-ready static body variables
 body_positions_jnp = jnp.array([b['pos'] for b in active_bodies])
 body_masses_jnp = jnp.array([b['mass'] for b in active_bodies])
 
-# Analytical calculation via Superposition
-true_u = np.zeros(coords_np.shape[0])
-for b in active_bodies:
-    r = np.sqrt((coords_np[:, 0] - b['pos'][0])**2 + (coords_np[:, 1] - b['pos'][1])**2 + softening**2)
-    true_u += -b['mass'] / r
+# 4. Generate the Fixed Background Neural Potential & Force Fields
+x_grid = np.linspace(-5, 5, resolution)
+y_grid = np.linspace(-5, 5, resolution)
+X, Y = np.meshgrid(x_grid, y_grid)
+coords_jnp = jnp.array(np.stack([X.ravel(), Y.ravel()], axis=-1))
 
-# Evaluate our updated PINN model across the field in a vectorized pass
+# Vectorized potential evaluation
 predicted_u = jax.vmap(model, in_axes=(0, None, None))(coords_jnp, body_positions_jnp, body_masses_jnp)
+predicted_u_grid = np.array(predicted_u).reshape(resolution, resolution)
 
-# Reshape fields for spatial display
-predicted_u = np.array(predicted_u).reshape(resolution, resolution)
-true_u_grid = true_u.reshape(resolution, resolution)
+# Compute acceleration forces across the whole grid for our streamlines!
+vectorized_acceleration = jax.vmap(compute_acceleration_at_point, in_axes=(None, 0, None, None))
+grid_forces = vectorized_acceleration(model, coords_jnp, body_positions_jnp, body_masses_jnp)
+fx_grid = np.array(grid_forces[:, 0]).reshape(resolution, resolution)
+fy_grid = np.array(grid_forces[:, 1]).reshape(resolution, resolution)
 
-# 5. Render Graphics
-fig, ax = plt.subplots(1, 2, figsize=(14, 6))
+# 5. Handle Particle State Space Initializations
+if "p_pos" not in st.session_state or st.sidebar.button("Reset Orbit Fields"):
+    np.random.seed(42)
+    angles = np.random.uniform(0, 2 * np.pi, num_particles)
+    radii = np.random.uniform(2.0, 4.6, num_particles)
+    st.session_state.p_pos = np.stack([radii * np.cos(angles), radii * np.sin(angles)], axis=-1)
+    st.session_state.p_vel = np.stack([-0.55 * np.sin(angles), 0.55 * np.cos(angles)], axis=-1)
 
-# Plot True Field
-im0 = ax[0].imshow(true_u_grid, extent=[-5, 5, -5, 5], cmap="inferno", origin="lower", vmin=-4.0, vmax=-0.1)
-ax[0].set_title(f"Analytical Multi-Body Field ({system_type})")
-for b in active_bodies:
-    ax[0].plot(b['pos'][0], b['pos'][1], 'wo', markersize=6) # Mark star positions
-fig.colorbar(im0, ax=ax[0], label="Potential U")
+# 6. Full-Width Render Canvas Window Loop
+plot_placeholder = st.empty()
 
-# Plot PINN Model Field
-im1 = ax[1].imshow(predicted_u, extent=[-5, 5, -5, 5], cmap="inferno", origin="lower", vmin=-4.0, vmax=-0.1)
-ax[1].set_title("Generalized PINN Predicted Field")
-for b in active_bodies:
-    ax[1].plot(b['pos'][0], b['pos'][1], 'wo', markersize=6)
-fig.colorbar(im1, ax=ax[1], label="Potential U")
+while run_sim:
+    pos = jnp.array(st.session_state.p_pos)
+    vel = jnp.array(st.session_state.p_vel)
+    
+    accel = vectorized_acceleration(model, pos, body_positions_jnp, body_masses_jnp)
+    
+    vel_new = vel + accel * dt
+    pos_new = pos + vel_new * dt
+    
+    pos_np = np.array(pos_new)
+    vel_np = np.array(vel_new)
+    
+    out_of_bounds = (np.abs(pos_np[:, 0]) > 4.9) | (np.abs(pos_np[:, 1]) > 4.9)
+    vel_np[out_of_bounds] *= -0.7 
+    
+    st.session_state.p_pos = pos_np
+    st.session_state.p_vel = vel_np
 
-plt.tight_layout()
-st.pyplot(fig)
-
-# Show performance metrics
-absolute_error = np.mean(np.abs(true_u_grid - predicted_u))
-st.metric(label="Mean Absolute Field Error (MAE)", value=f"{absolute_error:.6f}")
+    fig, ax = plt.subplots(figsize=(11, 7.5))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#0e1117')
+    
+    # Smooth potential contour background
+    ax.imshow(predicted_u_grid, extent=[-5, 5, -5, 5], cmap="inferno", origin="lower", alpha=0.85, vmin=-3.5, vmax=-0.1)
+    
+    # DYNAMIC STREAMLINES OVERLAY: Controls opacity cleanly using RGBA colors
+    ax.streamplot(X, Y, fx_grid, fy_grid, color=(1, 1, 1, 0.18), linewidth=0.8, density=1.2, arrowstyle='->')
+    
+    # Draw Stars
+    for b in active_bodies:
+        ax.plot(b['pos'][0], b['pos'][1], marker='o', color='#ffffff', markersize=11, markeredgecolor='#ffaa00', mew=2)
+        
+    # Draw Orbiting Dust Particles
+    ax.scatter(pos_np[:, 0], pos_np[:, 1], color='#00ffcc', s=14, alpha=0.95, edgecolors='none')
+    
+    ax.set_xlim(-5, 5)
+    ax.set_ylim(-5, 5)
+    ax.axis('off')
+    
+    plot_placeholder.pyplot(fig)
+    plt.close(fig)
+    time.sleep(0.005)

@@ -48,3 +48,18 @@ def compute_total_loss(model, batch_coords, batch_true_u, boundary_indices, body
     mean_boundary_loss = jnp.mean(jnp.square(pred_boundary - true_boundary))
     
     return 10.0 * (mean_boundary_loss + weighted_data_loss) + 0.01 * mean_physics_loss
+
+@jax.jit
+def compute_acceleration_at_point(model, coord, body_positions, body_masses):
+    """
+    Uses JAX automatic differentiation to find the exact acceleration vector 
+    acting on a particle at a given coordinate [x, y].
+    
+    a = -grad(U)
+    """
+    # jax.grad evaluates the gradient of the model with respect to argnums=0 (the coordinate)
+    grad_fn = jax.grad(model, argnums=0)
+    
+    # The acceleration is the negative gradient of the potential
+    accel = -grad_fn(coord, body_positions, body_masses)
+    return accel
