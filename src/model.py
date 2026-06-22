@@ -3,45 +3,47 @@ import jax.numpy as jnp
 import equinox as eqx
 
 class PotentialPINN(eqx.Module):
-    # Only structural weight layers belong as Module attributes
     layers: list
 
     def __init__(self, key):
         keys = jax.random.split(key, 3)
         
-        # FIX: Keep ONLY the Linear layers in this list
+        # We process the localized spatial/gravitational features
+        # Input dim is 3: [x_center_of_mass, y_center_of_mass, effective_radial_pull]
         self.layers = [
             eqx.nn.Linear(3, 64, key=keys[0]),
             eqx.nn.Linear(64, 64, key=keys[1]),
             eqx.nn.Linear(64, 1, key=keys[2])
         ]
 
-    def __call__(self, coord):
+    def __call__(self, coord, body_positions, body_masses):
         """
-        Forward pass function.
-        Transforms raw Cartesian inputs into Multimodal Features [x, y, r]
-        and cleanly applies tanh activations between layers.
+        Forward pass evaluated at a single probe coordinate [x, y],
+        conditioned on an arbitrary matrix of body configurations.
         """
-        x = coord[0]
-        y = coord[1]
+        x, y = coord[0], coord[1]
         
-        # 1. Compute radial distance from center
-        r = jnp.sqrt(x**2 + y**2 + 1e-5)
+        # 1. Compute relative vectors to all bodies simultaneously using broadcasting
+        dx = x - body_positions[:, 0]
+        dy = y - body_positions[:, 1]
+        r_sq = dx**2 + dy**2 + 1e-5
+        r = jnp.sqrt(r_sq)
         
-        # 2. Package all 3 features together 
-        in_features = jnp.array([x, y, r])
+        # 2. Extract mass-weighted features (Center of Mass influences & Net Radial Pressure)
+        # This collapses an arbitrary number of bodies N into static feature dimensions!
+        total_mass = jnp.sum(body_masses) + 1e-5
+        x_com = jnp.sum(body_masses * body_positions[:, 0]) / total_mass
+        y_com = jnp.sum(body_masses * body_positions[:, 1]) / total_mass
         
-        # 3. Step sequentially through the layers, applying tanh manually
-        val = in_features
+        # Effective localized gravitational warp scalar
+        net_radial_pull = jnp.sum(body_masses / r)
         
-        # Layer 1 -> Tanh
-        val = jax.nn.tanh(self.layers[0](val))
+        # 3. Formulate the dynamic multimodal feature array
+        in_features = jnp.array([x - x_com, y - y_com, net_radial_pull])
         
-        # Layer 2 -> Tanh
-        val = jax.nn.tanh(self.layers[1](val))
-        
-        # Layer 3 (Output Layer - No Tanh so it can drop down to negative values!)
+        # 4. Forward execution through hidden network
+        val = jnp.tanh(self.layers[0](in_features))
+        val = jnp.tanh(self.layers[1](val))
         val = self.layers[2](val)
         
-        # Return a single scalar (Potential U)
         return val[0]

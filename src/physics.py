@@ -1,52 +1,50 @@
 import jax
 import jax.numpy as jnp
 
-def laplace_residual(model, coord):
+def laplace_residual(model, coord, body_positions, body_masses):
     """
-    Computes the standard Cartesian Laplace PDE violation using JAX Autodiff:
-    Residual = d^2U/dx^2 + d^2U/dy^2
+    Computes Laplace PDE violation for multi-body space.
     """
-    # Define a function to get gradients of U with respect to coordinates
-    grad_u = jax.grad(model)
+    # Isolate grad with respect to coordinate argument only (argnums=0)
+    grad_u = jax.grad(model, argnums=0)
     
-    # Define functions to isolate single derivative elements for the Hessian
-    def du_dx(c): return grad_u(c)[0]
-    def du_dy(c): return grad_u(c)[1]
+    def du_dx(c): return grad_u(c, body_positions, body_masses)[0]
+    def du_dy(c): return grad_u(c, body_positions, body_masses)[1]
     
-    # Differentiate a second time to get second derivatives
     d2u_dx2 = jax.grad(du_dx)(coord)[0]
     d2u_dy2 = jax.grad(du_dy)(coord)[1]
     
-    # In empty space, Laplace states these must sum to 0
     return jnp.square(d2u_dx2 + d2u_dy2)
 
-def compute_total_loss(model, batch_coords, batch_true_u, boundary_indices):
+def compute_total_loss(model, batch_coords, batch_true_u, boundary_indices, body_positions, body_masses):
     """
-    Combines the physics constraint (Laplace) with an importance-weighted 
-    interior data loss to pull the network into the deep center well.
+    Evaluates multi-body PINN performance across the spatial field configuration.
     """
-    # 1. Calculate physics residual across all points using jax.vmap
-    vectorized_physics_loss = jax.vmap(laplace_residual, in_axes=(None, 0))
-    physics_violations = vectorized_physics_loss(model, batch_coords)
+    # 1. Vectorized evaluation over coordinates while locking body metadata static
+    vectorized_physics = jax.vmap(laplace_residual, in_axes=(None, 0, None, None))
+    physics_violations = vectorized_physics(model, batch_coords, body_positions, body_masses)
     mean_physics_loss = jnp.mean(physics_violations)
     
-    # 2. Evaluate model predictions across the whole batch
-    predicted_potentials = jax.vmap(model)(batch_coords)
+    # 2. Evaluate model predictions
+    vectorized_model = jax.vmap(model, in_axes=(0, None, None))
+    predicted_potentials = vectorized_model(batch_coords, body_positions, body_masses)
     
-    # 3. Calculate spatial distance mask to combat sample averaging laziness
-    distances = jnp.sqrt(batch_coords[:, 0]**2 + batch_coords[:, 1]**2 + 1e-5)
+    # 3. Dynamic Importance Weight Masking 
+    # Finds proximity to *any* mass singularity point in the landscape
+    min_distances = jnp.min(
+        jnp.sqrt(
+            jnp.square(batch_coords[:, None, 0] - body_positions[None, :, 0]) +
+            jnp.square(batch_coords[:, None, 1] - body_positions[None, :, 1]) + 1e-5
+        ), axis=1
+    )
+    importance_weights = 1.0 + (50.0 / (min_distances + 0.5))
     
-    # Points near the center scale up to a 50x penalty multiplier; edges stay at 1x
-    importance_weights = 1.0 + (50.0 / (distances + 0.5))
-    
-    # 4. Compute Weighted Data Loss
+    # 4. Weighted Data & Boundary Loss calculation
     squared_errors = jnp.square(predicted_potentials - batch_true_u)
     weighted_data_loss = jnp.mean(squared_errors * importance_weights)
     
-    # 5. Compute Boundary Loss (Enforces the outer container values match)
     pred_boundary = predicted_potentials[boundary_indices]
     true_boundary = batch_true_u[boundary_indices]
     mean_boundary_loss = jnp.mean(jnp.square(pred_boundary - true_boundary))
     
-    # Composite balance: High priority to data anchors, light smoothing from physics
     return 10.0 * (mean_boundary_loss + weighted_data_loss) + 0.01 * mean_physics_loss

@@ -1,32 +1,33 @@
 import numpy as np
-def generate_gravitational_field(num_points=100, low=-5.0, high=5.0, epsilon=0.1):
+
+def generate_multi_body_field(num_points=30, epsilon=0.1, bodies=None):
     """
-    Generates a 2D grid of coordinates and calculates the analytical 
-    gravitational potential (U) at each point.
-    """
-    # 1. Create a 1D array of evenly spaced points for x and y axes
-    x = np.linspace(low, high, num_points)
-    y = np.linspace(low, high, num_points)
+    Generates a gravitational potential field for an arbitrary number of masses.
     
-    # 2. Create a 2D grid (Meshgrid) from the 1D arrays
+    bodies: List of dictionaries containing {'pos': [x, y], 'mass': m}
+    """
+    # Default to a binary star system if no bodies are specified
+    if bodies is None:
+        bodies = [
+            {'pos': [-1.5, 0.0], 'mass': 1.0}, # Star A
+            {'pos': [1.5, 0.0],  'mass': 1.0}  # Star B
+        ]
+        
+    x = np.linspace(-5, 5, num_points)
+    y = np.linspace(-5, 5, num_points)
     X, Y = np.meshgrid(x, y)
     
-    # 3. Calculate the distance 'r' from the origin (0,0) with softening
-    r = np.sqrt(X**2 + Y**2 + epsilon)
+    # Flatten grid to match our training coordinate shape (N_points, 2)
+    coords = np.stack([X.ravel(), Y.ravel()], axis=-1)
     
-    # 4. Compute the analytical potential U = -1 / r
-    U = -1.0 / r
+    # Initialize total potential field to zero
+    true_u = np.zeros(coords.shape[0])
     
-    # 5. Reshape data into flat columns for machine learning input/output
-    # Coordinates shape: (N, 2) -> columns of [x, y]
-    coordinates = np.stack([X.ravel(), Y.ravel()], axis=1)
-    # Potentials shape: (N, 1) -> column of [U]
-    potentials = U.ravel().reshape(-1, 1)
-    
-    return coordinates, potentials
-
-if __name__ == "__main__":
-    # Test our generator
-    coords, potentials = generate_gravitational_field(num_points=5)
-    print("Sample Coordinates (x, y):\n", coords[:5])
-    print("\nCorresponding True Potentials (U):\n", potentials[:5])
+    # Compute superposition of potentials
+    for body in bodies:
+        bx, by = body['pos']
+        m = body['mass']
+        r = np.sqrt((coords[:, 0] - bx)**2 + (coords[:, 1] - by)**2 + epsilon**2)
+        true_u += -m / r
+        
+    return coords, true_u, bodies
