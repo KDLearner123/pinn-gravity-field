@@ -14,7 +14,7 @@ from src.physics import compute_acceleration_at_point
 
 st.set_page_config(layout="wide", page_title="PINN Cosmic Sandbox Engine")
 
-st.title("🌌 PINN Cosmic Sandbox Engine")
+st.title("PINN Cosmic Sandbox Engine")
 st.caption("A fully dynamic, mesh-free gravitational space simulator accelerated by a Physics-Informed Neural Network Meta-Solver.")
 
 # 1. Sidebar Configurations
